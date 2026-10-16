@@ -11,7 +11,7 @@ from cachetools import TTLCache
 
 from app.models.schemas import TrackingResponse, TrackingEvent
 from app.services.captcha_solver import solve_image_captcha, solve_text_captcha
-from app.services.parser import parse_indiapost_json, parse_indiapost_html
+from app.services.parser import parse_indiapost_json, parse_indiapost_html, determine_event_status
 
 logger = logging.getLogger("indiapost_tracker")
 
@@ -410,12 +410,15 @@ class IndiaPostTrackerService:
 
             events = []
             for ev in events_raw:
+                desc = ev.get("event_description")
+                code = ev.get("event_code")
                 events.append(TrackingEvent(
                     date=ev.get("event_date"),
                     time=ev.get("event_time"),
                     office=ev.get("event_office"),
-                    event=ev.get("event_description"),
-                    event_type=ev.get("event_code"),
+                    event=desc,
+                    event_type=code,
+                    status=determine_event_status(desc, code)
                 ))
 
             status = "delivered" if delivery.get("status", "").lower() == "delivered" else "in_transit"

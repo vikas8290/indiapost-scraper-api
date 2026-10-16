@@ -4,9 +4,41 @@ from bs4 import BeautifulSoup
 from app.models.schemas import TrackingResponse, TrackingEvent
 
 
+def determine_event_status(
+    event_desc: Optional[str],
+    event_code: Optional[str] = None,
+    remarks: Optional[str] = None
+) -> str:
+    """
+    Derives a clear, human-readable status for an individual tracking event.
+    Examples: Delivered, Out for Delivery, In Transit, Booked, Returned / RTO, Delivery Attempted
+    """
+    rem = (remarks or "").strip()
+    if rem and rem.lower() not in ["", "none", "null"]:
+        return rem
+
+    code = (event_code or "").upper()
+    desc = (event_desc or "").lower()
+
+    if "out for delivery" in desc or "out_for_delivery" in desc or "item_invoice" in code or "out for delivery" in code:
+        return "Out for Delivery"
+    if "deliver" in code or "deliver" in desc:
+        return "Delivered"
+    if any(r in desc for r in ["return", "rto", "undeliver"]) or "RETURN" in code or "UNDELIVER" in code:
+        return "Returned / RTO"
+    if any(u in desc for u in ["door locked", "refused", "insufficient", "addressee"]) and "deliver" not in desc:
+        return "Delivery Attempted"
+    if "book" in code or "book" in desc:
+        return "Booked"
+    if any(d in code for d in ["DISPATCH", "RECEIVE", "BAG", "TRANSIT", "FORWARD", "OPEN"]) or any(d in desc for d in ["dispatch", "received", "bag", "transit"]):
+        return "In Transit"
+
+    return "In Transit" if event_desc else "Pending"
+
+
 def normalize_status(current_status: str, events: List[TrackingEvent]) -> str:
     """
-    Normalizes status string into standard lifecycle states:
+    Normalizes overall consignment status string into standard lifecycle states:
     pending, booked, in_transit, out_for_delivery, delivered, rto, rto_requested, cancelled
     """
     text = (current_status or "").lower()
@@ -78,13 +110,19 @@ def parse_indiapost_json(data: Dict[str, Any], consignment_no: str) -> Optional[
         event_code = (ev.get("eventcode") or "").lower()
         remarks = ev.get("remarks")
 
+        event_status = determine_event_status(
+            event_desc=event_desc,
+            event_code=event_code,
+            remarks=remarks
+        )
+
         events.append(TrackingEvent(
             date=date_formatted,
             time=time_formatted,
             office=office,
             event=event_desc,
             event_type=event_code or (event_desc.lower().replace(" ", "_") if event_desc else None),
-            status=remarks
+            status=event_status
         ))
 
     delivery_confirmed_on = booking.get("delivery_confirmed_on")
@@ -174,12 +212,18 @@ def parse_indiapost_html(html: str) -> Dict[str, Any]:
                 office_val = cols[2]
                 event_val = cols[3]
 
+                event_status = determine_event_status(
+                    event_desc=event_val,
+                    event_code=None
+                )
+
                 ev = TrackingEvent(
                     date=date_val,
                     time=time_val,
                     office=office_val,
                     event=event_val,
                     event_type=event_val.lower().replace(" ", "_"),
+                    status=event_status
                 )
                 events.append(ev)
 
