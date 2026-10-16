@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  indiapost-api:
+    build: .
+    container_name: indiapost_tracker_api
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - HOST=0.0.0.0
+      - CACHE_TTL_SECONDS=900
+    env_file:
+      - .env
