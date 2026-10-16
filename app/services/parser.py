@@ -142,6 +142,9 @@ def parse_indiapost_json(data: Dict[str, Any], consignment_no: str) -> Optional[
 
     destination = booking.get("destination_office_name") or booking.get("destination_city")
 
+    # Reverse events to display in chronological order (from booking to delivery)
+    events_reversed = list(reversed(events))
+
     return TrackingResponse(
         success=True,
         consignment_number=consignment_no,
@@ -156,8 +159,8 @@ def parse_indiapost_json(data: Dict[str, Any], consignment_no: str) -> Optional[
         origin_pincode=booking.get("booking_pin"),
         delivered_at=delivery_confirmed_on,
         last_updated=latest_event.date if latest_event else None,
-        events_count=len(events),
-        events=events,
+        events_count=len(events_reversed),
+        events=events_reversed,
         source="indiapost_portal_scraper"
     )
 
@@ -245,6 +248,6 @@ def parse_indiapost_html(html: str) -> Dict[str, Any]:
         "destination": destination,
         "destination_pincode": dest_pincode,
         "delivered_at": delivered_at,
-        "events": events,
+        "events": list(reversed(events)),
         "events_count": len(events)
     }

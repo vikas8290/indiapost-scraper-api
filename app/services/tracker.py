@@ -436,7 +436,7 @@ class IndiaPostTrackerService:
                 destination_pincode=booking.get("destination_pincode"),
                 delivered_at=delivery.get("delivery_date"),
                 events_count=len(events),
-                events=events,
+                events=list(reversed(events)),
                 source="official_cept_api"
             )
 
