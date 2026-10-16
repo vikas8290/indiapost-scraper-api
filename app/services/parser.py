@@ -1,7 +1,7 @@
 import re
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Optional
 from bs4 import BeautifulSoup
-from app.models.schemas import TrackingEvent
+from app.models.schemas import TrackingResponse, TrackingEvent
 
 
 def normalize_status(current_status: str, events: List[TrackingEvent]) -> str:
@@ -30,7 +30,7 @@ def normalize_status(current_status: str, events: List[TrackingEvent]) -> str:
 
         if "delivered" in last_text:
             return "delivered"
-        if "out for delivery" in last_text:
+        if "out for delivery" in last_text or "item_invoice" in (last_event.event_type or "").lower():
             return "out_for_delivery"
         if any(r in last_text for r in ["return", "rto", "returned to sender", "undelivered"]):
             return "rto"
@@ -53,9 +53,80 @@ def normalize_status(current_status: str, events: List[TrackingEvent]) -> str:
     return "in_transit" if events else "pending"
 
 
+def parse_indiapost_json(data: Dict[str, Any], consignment_no: str) -> Optional[TrackingResponse]:
+    """
+    Parses tracking results from India Post Next.js backend JSON response.
+    """
+    if not data:
+        return None
+
+    booking = data.get("booking_details", {}) or {}
+    del_status = data.get("del_status", {}) or {}
+    raw_events = data.get("tracking_details", []) or []
+
+    # If article_number is null and no events exist, the article was never booked/found
+    if not booking.get("article_number") and not raw_events:
+        return None
+
+    events: List[TrackingEvent] = []
+    for ev in raw_events:
+        raw_date = ev.get("date") or ""
+        date_formatted = raw_date.split("T")[0] if "T" in raw_date else raw_date
+        time_formatted = ev.get("time")
+        office = ev.get("office")
+        event_desc = ev.get("event")
+        event_code = (ev.get("eventcode") or "").lower()
+        remarks = ev.get("remarks")
+
+        events.append(TrackingEvent(
+            date=date_formatted,
+            time=time_formatted,
+            office=office,
+            event=event_desc,
+            event_type=event_code or (event_desc.lower().replace(" ", "_") if event_desc else None),
+            status=remarks
+        ))
+
+    delivery_confirmed_on = booking.get("delivery_confirmed_on")
+    raw_status = del_status.get("del_status") or (events[0].event if events else "in_transit")
+    norm_status = normalize_status(raw_status, events)
+    delivered = (norm_status == "delivered") or bool(delivery_confirmed_on)
+    if delivered:
+        norm_status = "delivered"
+
+    latest_event = events[0] if events else None
+    if latest_event and latest_event.office:
+        current_status = f"{latest_event.event} at {latest_event.office}"
+    elif latest_event:
+        current_status = latest_event.event
+    else:
+        current_status = raw_status
+
+    destination = booking.get("destination_office_name") or booking.get("destination_city")
+
+    return TrackingResponse(
+        success=True,
+        consignment_number=consignment_no,
+        status=norm_status,
+        current_status=current_status,
+        delivered=delivered,
+        article_type=booking.get("article_type", "Speed Post"),
+        booked_at=booking.get("booking_office_name"),
+        booked_on=booking.get("booking_date"),
+        destination=destination,
+        destination_pincode=booking.get("destination_pincode"),
+        origin_pincode=booking.get("booking_pin"),
+        delivered_at=delivery_confirmed_on,
+        last_updated=latest_event.date if latest_event else None,
+        events_count=len(events),
+        events=events,
+        source="indiapost_portal_scraper"
+    )
+
+
 def parse_indiapost_html(html: str) -> Dict[str, Any]:
     """
-    Parses tracking results from India Post TrackConsignment HTML output.
+    Parses tracking results from legacy India Post TrackConsignment HTML output.
     """
     soup = BeautifulSoup(html, "html.parser")
 
@@ -74,8 +145,6 @@ def parse_indiapost_html(html: str) -> Dict[str, Any]:
         rows = summary_table.find_all("tr")
         if len(rows) > 1:
             cells = [c.get_text(strip=True) for c in rows[1].find_all(["td", "th"])]
-            # India Post table headers usually:
-            # [Booked At, Booked On, Destination Pincode, Tariff, Article Type, Delivery Location, Event Date/Status]
             if len(cells) >= 6:
                 booked_at = cells[0] if cells[0] else None
                 booked_on = cells[1] if cells[1] else None
@@ -88,7 +157,6 @@ def parse_indiapost_html(html: str) -> Dict[str, Any]:
     # Look for Event timeline table
     event_table = soup.find("table", {"id": re.compile(r"gvTrackEventsOER|gvTrackEvents|events|Grid", re.I)})
     if not event_table:
-        # Fallback to any second table with date/time columns
         tables = soup.find_all("table")
         for tbl in tables:
             header_text = tbl.get_text().lower()
