@@ -1,9 +1,10 @@
 import os
 import logging
+from pathlib import Path as FilePath
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query, Path
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from app.models.schemas import TrackingResponse, TrackRequest
 from app.services.tracker import tracker_service
@@ -18,15 +19,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger("api")
 
+# Disable public swagger/docs to hide API internals as requested
 app = FastAPI(
-    title="India Post Free Self-Hosted Tracking API",
-    description="A free, self-hosted REST API to track India Post / Speed Post consignments without RapidAPI.",
+    title="India Post Consignment Tracking Portal",
+    description="Live Tracking Portal for India Post & Speed Post Consignments.",
     version="1.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc"
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None
 )
 
-# Enable CORS for web apps and dashboard integrations
+# Enable CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -35,20 +38,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+TEMPLATES_DIR = FilePath(__file__).resolve().parent / "templates"
+INDEX_HTML_PATH = TEMPLATES_DIR / "index.html"
 
-@app.get("/", tags=["General"])
+
+def get_html_content() -> str:
+    if INDEX_HTML_PATH.exists():
+        with open(INDEX_HTML_PATH, "r", encoding="utf-8") as f:
+            return f.read()
+    return "<h1>India Post Tracking Portal</h1><p>Please enter consignment number to track.</p>"
+
+
+@app.get("/", response_class=HTMLResponse, tags=["Tracking Portal"])
+@app.head("/", response_class=HTMLResponse, tags=["Tracking Portal"])
 def root():
-    return {
-        "service": "India Post Free Tracking Scraper API",
-        "status": "online",
-        "version": "1.0.0",
-        "documentation": "/docs",
-        "endpoints": {
-            "track_get_path": "/api/track/{consignment_number}",
-            "track_get_query": "/api/track?consignment=EE123456789IN",
-            "track_post_json": "/api/track"
-        }
-    }
+    """
+    Render clean, responsive tracking web interface for users.
+    """
+    return HTMLResponse(content=get_html_content(), status_code=200)
+
+
+@app.get("/track/{consignment_number}", response_class=HTMLResponse, tags=["Tracking Portal"])
+def track_page(consignment_number: str):
+    """
+    Deep-link route to open the tracking page with consignment prefilled.
+    """
+    return HTMLResponse(content=get_html_content(), status_code=200)
 
 
 @app.get("/api/health", tags=["Health"])
@@ -56,7 +71,7 @@ def health_check():
     return {"status": "ok", "cached_items": len(tracker_service.cache)}
 
 
-@app.get("/api/track/{consignment_number}", response_model=TrackingResponse, tags=["Tracking"])
+@app.get("/api/track/{consignment_number}", response_model=TrackingResponse, tags=["Tracking API"])
 def track_by_path(
     consignment_number: str = Path(..., description="13-character consignment number, e.g. EE123456789IN")
 ):
@@ -72,7 +87,7 @@ def track_by_path(
     return response
 
 
-@app.get("/api/track", response_model=TrackingResponse, tags=["Tracking"])
+@app.get("/api/track", response_model=TrackingResponse, tags=["Tracking API"])
 def track_by_query(
     consignment: str = Query(..., description="13-character consignment number, e.g. EE123456789IN")
 ):
@@ -82,7 +97,7 @@ def track_by_query(
     return track_by_path(consignment)
 
 
-@app.post("/api/track", response_model=TrackingResponse, tags=["Tracking"])
+@app.post("/api/track", response_model=TrackingResponse, tags=["Tracking API"])
 def track_by_post(payload: TrackRequest):
     """
     Track an India Post consignment number via JSON POST body.
