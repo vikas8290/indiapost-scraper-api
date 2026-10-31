@@ -456,6 +456,19 @@
             color: #ffffff;
         }
 
+        .step-item.rto .step-icon {
+            border-color: var(--danger);
+            background: var(--danger);
+            color: #ffffff;
+            transform: scale(1.1);
+            box-shadow: 0 0 0 6px rgba(220, 38, 38, 0.2);
+        }
+
+        .step-item.rto .step-title {
+            color: var(--danger);
+            font-weight: 800;
+        }
+
         .step-title {
             font-size: 0.85rem;
             font-weight: 700;
@@ -1008,12 +1021,85 @@
             }
         }
 
+        function formatIndianDateTime(dateStr, timeStr) {
+            if (!dateStr && !timeStr) return '--';
+
+            let d = dateStr ? String(dateStr).trim() : '';
+            let t = timeStr ? String(timeStr).trim() : '';
+
+            // Handle ISO string e.g. 2026-10-27T11:20:30Z or 2026-10-27 11:20:30
+            if (d.includes('T')) {
+                const parts = d.replace(/Z$/i, '').split('T');
+                d = parts[0];
+                if (!t && parts[1]) t = parts[1];
+            } else if (d.includes(' ') && !t) {
+                const parts = d.split(' ');
+                d = parts[0];
+                t = parts[1];
+            }
+
+            let year, month, day;
+            if (d.includes('-')) {
+                const p = d.split('-');
+                if (p[0].length === 4) {
+                    year = parseInt(p[0], 10);
+                    month = parseInt(p[1], 10) - 1;
+                    day = parseInt(p[2], 10);
+                } else {
+                    day = parseInt(p[0], 10);
+                    month = parseInt(p[1], 10) - 1;
+                    year = parseInt(p[2], 10);
+                }
+            } else if (d.includes('/')) {
+                const p = d.split('/');
+                if (p[0].length === 4) {
+                    year = parseInt(p[0], 10);
+                    month = parseInt(p[1], 10) - 1;
+                    day = parseInt(p[2], 10);
+                } else {
+                    day = parseInt(p[0], 10);
+                    month = parseInt(p[1], 10) - 1;
+                    year = parseInt(p[2], 10);
+                }
+            }
+
+            let hour = null, minute = null;
+            if (t) {
+                const cleanT = t.replace(/Z$/i, '').split('.')[0];
+                const tp = cleanT.split(':');
+                if (tp.length >= 2) {
+                    hour = parseInt(tp[0], 10);
+                    minute = parseInt(tp[1], 10);
+                }
+            }
+
+            const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            let datePart = '';
+            if (!isNaN(day) && !isNaN(month) && month >= 0 && month < 12 && !isNaN(year)) {
+                const dayStr = day < 10 ? '0' + day : '' + day;
+                datePart = `${dayStr} ${months[month]} ${year}`;
+            } else {
+                datePart = d || '--';
+            }
+
+            if (hour !== null && minute !== null && !isNaN(hour) && !isNaN(minute)) {
+                const ampm = hour >= 12 ? 'PM' : 'AM';
+                let h12 = hour % 12;
+                if (h12 === 0) h12 = 12;
+                const h12Str = h12 < 10 ? '0' + h12 : '' + h12;
+                const minStr = minute < 10 ? '0' + minute : '' + minute;
+                return `${datePart}, ${h12Str}:${minStr} ${ampm}`;
+            }
+
+            return datePart;
+        }
+
         function renderTrackingData(data) {
             document.getElementById('displayConsignment').innerText = data.consignment_number;
             document.getElementById('displayCurrentStatus').innerText = data.current_status || formatStatusTitle(data.status);
             document.getElementById('displayArticleType').innerText = data.article_type || 'Speed Post';
             document.getElementById('displayBookedAt').innerText = data.booked_at || (data.events && data.events.length ? data.events[data.events.length - 1].office : 'Origin Post Office');
-            document.getElementById('displayBookedOn').innerText = data.booked_on || (data.events && data.events.length ? data.events[data.events.length - 1].date : '--');
+            document.getElementById('displayBookedOn').innerText = formatIndianDateTime(data.booked_on || (data.events && data.events.length ? data.events[data.events.length - 1].date : ''));
             
             const dest = (data.destination || '') + (data.destination_pincode ? ' (' + data.destination_pincode + ')' : '');
             document.getElementById('displayDestination').innerText = dest || 'Destination Post Office';
@@ -1040,14 +1126,29 @@
                     const item = document.createElement('div');
                     item.className = 'timeline-item';
                     
-                    const dateTime = (ev.date || '') + (ev.time ? ' ' + ev.time : '');
+                    const dateTimeFormatted = formatIndianDateTime(ev.date, ev.time);
+                    
+                    let statusTag = '';
+                    if (ev.status && !['In Transit', 'Pending'].includes(ev.status)) {
+                        const isRed = ['Refused', 'Returned / RTO', 'Delivery Attempted'].includes(ev.status);
+                        const isGreen = ev.status === 'Delivered';
+                        const bg = isRed ? '#fee2e2' : (isGreen ? '#dcfce7' : '#e0f2fe');
+                        const col = isRed ? '#b91c1c' : (isGreen ? '#15803d' : '#0369a1');
+                        statusTag = `<span style="display: inline-block; font-size: 0.75rem; font-weight: 700; background: ${bg}; color: ${col}; padding: 2px 8px; border-radius: 999px; margin-left: 8px;">${escapeHtml(ev.status)}</span>`;
+                    }
+                    
+                    const isReturnEvent = (ev.status === 'Refused' || (ev.event && ev.event.toLowerCase().includes('return')));
+                    const pointStyle = isReturnEvent ? 'background: var(--danger); border-color: var(--danger); box-shadow: 0 0 0 4px rgba(220, 38, 38, 0.2);' : '';
                     
                     item.innerHTML = `
-                        <div class="timeline-point"></div>
+                        <div class="timeline-point" style="${pointStyle}"></div>
                         <div class="timeline-box">
                             <div class="timeline-header">
-                                <span class="timeline-event-name">${escapeHtml(ev.event || 'Processing at Facility')}</span>
-                                <span class="timeline-time">${escapeHtml(dateTime || '--')}</span>
+                                <span class="timeline-event-name">
+                                    ${escapeHtml(ev.event || 'Processing at Facility')}
+                                    ${statusTag}
+                                </span>
+                                <span class="timeline-time">${escapeHtml(dateTimeFormatted)}</span>
                             </div>
                             <div class="timeline-office">
                                 <i class="fa-solid fa-building-columns"></i>
@@ -1071,9 +1172,12 @@
             const s4 = document.getElementById('step4');
             const prog = document.getElementById('stepperProgress');
             const stepTitle4 = document.getElementById('stepTitle4');
+            const icon4 = s4.querySelector('.step-icon i');
 
             // Reset classes
             [s1, s2, s3, s4].forEach(el => el.className = 'step-item');
+            prog.style.background = 'var(--post-red)';
+            if (icon4) icon4.className = 'fa-solid fa-house-chimney-check';
 
             if (s === 'delivered') {
                 s1.className = 'step-item completed';
@@ -1081,14 +1185,19 @@
                 s3.className = 'step-item completed';
                 s4.className = 'step-item completed';
                 prog.style.width = '100%';
+                prog.style.background = 'var(--success)';
                 stepTitle4.innerText = 'Delivered';
+                document.getElementById('stepDate4').innerText = formatIndianDateTime(data.delivered_at);
             } else if (s === 'rto' || s === 'rto_requested') {
                 s1.className = 'step-item completed';
                 s2.className = 'step-item completed';
                 s3.className = 'step-item completed';
-                s4.className = 'step-item active';
+                s4.className = 'step-item rto';
                 prog.style.width = '100%';
+                prog.style.background = 'var(--danger)';
                 stepTitle4.innerText = 'Returned (RTO)';
+                if (icon4) icon4.className = 'fa-solid fa-arrow-rotate-left';
+                document.getElementById('stepDate4').innerText = formatIndianDateTime(data.returned_at || (data.events && data.events.length ? (data.events[0].date + ' ' + (data.events[0].time || '')) : ''));
             } else if (s === 'out_for_delivery') {
                 s1.className = 'step-item completed';
                 s2.className = 'step-item completed';
@@ -1104,23 +1213,34 @@
                 prog.style.width = '0%';
             }
 
+            // Step dates
             if (data.booked_on) {
-                document.getElementById('stepDate1').innerText = data.booked_on.split(' ')[0];
+                document.getElementById('stepDate1').innerText = formatIndianDateTime(data.booked_on);
             }
-            if (data.delivered_at) {
-                document.getElementById('stepDate4').innerText = data.delivered_at.split(' ')[0];
+
+            // Search events for in_transit and out_for_delivery dates
+            if (data.events && data.events.length) {
+                const transitEv = data.events.find(e => (e.status === 'In Transit' || e.event_type === 'bag_dispatch' || (e.event || '').toLowerCase().includes('dispatch')));
+                if (transitEv) {
+                    document.getElementById('stepDate2').innerText = formatIndianDateTime(transitEv.date, transitEv.time);
+                }
+
+                const outEv = data.events.find(e => (e.status === 'Out for Delivery' || (e.event || '').toLowerCase().includes('out for delivery') || e.event_type === 'item_invoice'));
+                if (outEv) {
+                    document.getElementById('stepDate3').innerText = formatIndianDateTime(outEv.date, outEv.time);
+                }
             }
         }
 
         function formatStatusTitle(st) {
-            if (!st) return 'In Transit';
+            if (!st) return 'IN TRANSIT';
             switch(st.toLowerCase()) {
-                case 'delivered': return 'Delivered';
-                case 'out_for_delivery': return 'Out For Delivery';
-                case 'in_transit': return 'In Transit';
-                case 'booked': return 'Item Booked';
-                case 'rto': return 'Returned to Sender';
-                case 'rto_requested': return 'RTO Initiated';
+                case 'delivered': return 'DELIVERED';
+                case 'out_for_delivery': return 'OUT FOR DELIVERY';
+                case 'in_transit': return 'IN TRANSIT';
+                case 'booked': return 'ITEM BOOKED';
+                case 'rto': return 'RETURN TO SENDER (RTO)';
+                case 'rto_requested': return 'RTO INITIATED';
                 default: return st.replace(/_/g, ' ').toUpperCase();
             }
         }
@@ -1159,3 +1279,4 @@
     </script>
 </body>
 </html>
+

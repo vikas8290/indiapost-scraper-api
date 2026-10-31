@@ -1,4 +1,5 @@
 import re
+from datetime import datetime
 from typing import List, Dict, Any, Optional
 from bs4 import BeautifulSoup
 from app.models.schemas import TrackingResponse, TrackingEvent
@@ -36,6 +37,72 @@ def determine_event_status(
     return "In Transit" if event_desc else "Pending"
 
 
+def format_ist_datetime(date_str: Optional[str], time_str: Optional[str] = None) -> Optional[str]:
+    """
+    Formats dates and times into standard 12-hour AM/PM format in Asia/Kolkata (IST).
+    Examples: '27 Oct 2026, 11:20 AM', '29 Oct 2026, 05:26 PM'
+    """
+    if not date_str and not time_str:
+        return None
+
+    s = (date_str or "").strip().replace("Z", "")
+    if "T" in s:
+        parts = s.split("T")
+        s = parts[0]
+        if not time_str and len(parts) > 1:
+            time_str = parts[1]
+
+    if time_str:
+        full = f"{s} {time_str.strip()}"
+    else:
+        full = s
+
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%d/%m/%Y %H:%M:%S",
+        "%d-%m-%Y %H:%M:%S",
+        "%d/%m/%Y %H:%M",
+        "%d-%m-%Y %H:%M",
+        "%Y-%m-%d",
+        "%d/%m/%Y",
+        "%d-%m-%Y"
+    ):
+        try:
+            dt = datetime.strptime(full, fmt)
+            if any(k in fmt for k in ("%H", "%M")):
+                return dt.strftime("%d %b %Y, %I:%M %p")
+            return dt.strftime("%d %b %Y")
+        except ValueError:
+            continue
+
+    return full
+
+
+def find_rto_event(events: List[TrackingEvent]) -> Optional[TrackingEvent]:
+    """
+    Finds if any event in the tracking history indicates a return/RTO.
+    """
+    for ev in events:
+        desc = (ev.event or "").lower()
+        code = (ev.event_type or "").lower()
+        st = (ev.status or "").lower()
+
+        if (
+            "item_return" in code or
+            "itemreturn" in code or
+            "rto" in code or
+            "returned to sender" in desc or
+            "item returned" in desc or
+            "return to sender" in desc or
+            "rto" in desc or
+            "undelivered" in desc or
+            st in ["refused", "unclaimed", "door locked", "addressee left", "insufficient address"]
+        ):
+            return ev
+    return None
+
+
 def normalize_status(current_status: str, events: List[TrackingEvent]) -> str:
     """
     Normalizes overall consignment status string into standard lifecycle states:
@@ -47,13 +114,14 @@ def normalize_status(current_status: str, events: List[TrackingEvent]) -> str:
     if "cancel" in text:
         return "cancelled"
 
+    # Check if this consignment was returned to sender (RTO)
+    rto_ev = find_rto_event(events)
+    if rto_ev or "returned" in text or "return" in text or "rto" in text:
+        return "rto"
+
     # Delivered check
     if "delivered" in text or "delivery confirmed" in text:
         return "delivered"
-
-    # RTO / Returned check
-    if "returned" in text or "return" in text or "rto" in text:
-        return "rto"
 
     # Check last event if available
     if events:
@@ -128,12 +196,30 @@ def parse_indiapost_json(data: Dict[str, Any], consignment_no: str) -> Optional[
     delivery_confirmed_on = booking.get("delivery_confirmed_on")
     raw_status = del_status.get("del_status") or (events[0].event if events else "in_transit")
     norm_status = normalize_status(raw_status, events)
-    delivered = (norm_status == "delivered") or bool(delivery_confirmed_on)
-    if delivered:
-        norm_status = "delivered"
+
+    rto_ev = find_rto_event(events)
+    returned_at = None
+    if rto_ev:
+        norm_status = "rto"
+        if rto_ev.date and rto_ev.time:
+            returned_at = f"{rto_ev.date} {rto_ev.time}"
+        elif rto_ev.date:
+            returned_at = rto_ev.date
+
+    delivered = (norm_status == "delivered") or (bool(delivery_confirmed_on) and norm_status != "rto")
 
     latest_event = events[0] if events else None
-    if latest_event and latest_event.office:
+    if norm_status == "rto":
+        reason = f" ({rto_ev.status})" if (rto_ev and rto_ev.status and rto_ev.status.lower() not in ["in transit", "pending", "booked", "delivered", "returned / rto"]) else ""
+        if latest_event and latest_event != rto_ev and latest_event.office:
+            current_status = f"Returned to Sender{reason} - {latest_event.event} at {latest_event.office}"
+        elif latest_event and latest_event != rto_ev:
+            current_status = f"Returned to Sender{reason} - {latest_event.event}"
+        elif latest_event and latest_event.office:
+            current_status = f"Item Returned to Sender{reason} at {latest_event.office}"
+        else:
+            current_status = f"Item Returned to Sender{reason}"
+    elif latest_event and latest_event.office:
         current_status = f"{latest_event.event} at {latest_event.office}"
     elif latest_event:
         current_status = latest_event.event
@@ -145,6 +231,9 @@ def parse_indiapost_json(data: Dict[str, Any], consignment_no: str) -> Optional[
     # Reverse events to display in chronological order (from booking to delivery)
     events_reversed = list(reversed(events))
 
+    raw_booking_date = booking.get("booking_date")
+    clean_booking_date = raw_booking_date.replace("Z", "").replace("T", " ") if raw_booking_date else None
+
     return TrackingResponse(
         success=True,
         consignment_number=consignment_no,
@@ -153,11 +242,12 @@ def parse_indiapost_json(data: Dict[str, Any], consignment_no: str) -> Optional[
         delivered=delivered,
         article_type=booking.get("article_type", "Speed Post"),
         booked_at=booking.get("booking_office_name"),
-        booked_on=booking.get("booking_date"),
+        booked_on=clean_booking_date or raw_booking_date,
         destination=destination,
         destination_pincode=booking.get("destination_pincode"),
         origin_pincode=booking.get("booking_pin"),
         delivered_at=delivery_confirmed_on,
+        returned_at=returned_at,
         last_updated=latest_event.date if latest_event else None,
         events_count=len(events_reversed),
         events=events_reversed,
@@ -230,13 +320,34 @@ def parse_indiapost_html(html: str) -> Dict[str, Any]:
                 )
                 events.append(ev)
 
+    rto_ev = find_rto_event(events)
+    returned_at = None
+    if rto_ev:
+        if rto_ev.date and rto_ev.time:
+            returned_at = f"{rto_ev.date} {rto_ev.time}"
+        elif rto_ev.date:
+            returned_at = rto_ev.date
+
     if events:
         latest = events[0]
-        current_status = f"{latest.event} at {latest.office}"
-        if "delivered" in latest.event.lower():
-            delivered_at = f"{latest.date} {latest.time}".strip()
+        if rto_ev:
+            reason = f" ({rto_ev.status})" if (rto_ev.status and rto_ev.status.lower() not in ["in transit", "pending", "booked", "delivered", "returned / rto"]) else ""
+            if latest != rto_ev and latest.office:
+                current_status = f"Returned to Sender{reason} - {latest.event} at {latest.office}"
+            elif latest != rto_ev:
+                current_status = f"Returned to Sender{reason} - {latest.event}"
+            elif latest.office:
+                current_status = f"Item Returned to Sender{reason} at {latest.office}"
+            else:
+                current_status = f"Item Returned to Sender{reason}"
+        else:
+            current_status = f"{latest.event} at {latest.office}"
+            if "delivered" in latest.event.lower():
+                delivered_at = f"{latest.date} {latest.time}".strip()
 
     status = normalize_status(current_status or "", events)
+    if rto_ev:
+        status = "rto"
 
     return {
         "status": status,
@@ -248,6 +359,7 @@ def parse_indiapost_html(html: str) -> Dict[str, Any]:
         "destination": destination,
         "destination_pincode": dest_pincode,
         "delivered_at": delivered_at,
+        "returned_at": returned_at,
         "events": list(reversed(events)),
         "events_count": len(events)
     }
