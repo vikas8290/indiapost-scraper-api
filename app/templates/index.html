@@ -955,10 +955,18 @@
             this.value = this.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
         });
 
-        // Check URL parameter on load (e.g. ?id=ET413397357IN or ?consignment=...)
+        // Check URL parameter or path on load (e.g. /track/CR217179065IN or ?id=CR217179065IN)
         window.addEventListener('DOMContentLoaded', () => {
             const urlParams = new URLSearchParams(window.location.search);
-            const queryId = urlParams.get('id') || urlParams.get('consignment') || urlParams.get('tracking_id');
+            let queryId = urlParams.get('id') || urlParams.get('consignment') || urlParams.get('tracking_id');
+
+            if (!queryId) {
+                const pathMatch = window.location.pathname.match(/\/track\/([A-Za-z0-9]+)/i);
+                if (pathMatch && pathMatch[1]) {
+                    queryId = pathMatch[1];
+                }
+            }
+
             if (queryId) {
                 input.value = queryId.trim().toUpperCase();
                 handleTrack();
@@ -1026,6 +1034,11 @@
 
             let d = dateStr ? String(dateStr).trim() : '';
             let t = timeStr ? String(timeStr).trim() : '';
+
+            // If string already has AM/PM formatted text, return directly
+            if (d && (d.includes(' AM') || d.includes(' PM')) && !t) {
+                return d;
+            }
 
             // Handle ISO string e.g. 2026-10-27T11:20:30Z or 2026-10-27 11:20:30
             if (d.includes('T')) {

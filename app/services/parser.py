@@ -37,23 +37,52 @@ def determine_event_status(
     return "In Transit" if event_desc else "Pending"
 
 
+def format_ist_time(time_str: Optional[str]) -> Optional[str]:
+    """
+    Converts 24-hour or raw time into 12-hour AM/PM format (Asia/Kolkata).
+    Examples:
+      '11:20:30' -> '11:20 AM'
+      '17:01:38' -> '05:01 PM'
+      '00:09:24' -> '12:09 AM'
+    """
+    if not time_str:
+        return None
+    s = str(time_str).strip().replace("Z", "")
+    if " " in s and any(m in s.upper() for m in ["AM", "PM"]):
+        return s
+
+    s = s.split(".")[0]
+    for fmt in ("%H:%M:%S", "%H:%M", "%I:%M:%S %p", "%I:%M %p"):
+        try:
+            t = datetime.strptime(s, fmt)
+            return t.strftime("%I:%M %p")
+        except ValueError:
+            continue
+    return s
+
+
 def format_ist_datetime(date_str: Optional[str], time_str: Optional[str] = None) -> Optional[str]:
     """
     Formats dates and times into standard 12-hour AM/PM format in Asia/Kolkata (IST).
-    Examples: '27 Oct 2026, 11:20 AM', '29 Oct 2026, 05:26 PM'
+    Examples:
+      '2026-10-27T11:20:30Z' -> '27 Oct 2026, 11:20 AM'
+      '2026-10-27', '17:01:38' -> '27 Oct 2026, 05:01 PM'
     """
     if not date_str and not time_str:
         return None
 
     s = (date_str or "").strip().replace("Z", "")
+    t = (time_str or "").strip().replace("Z", "") if time_str else None
+
     if "T" in s:
         parts = s.split("T")
         s = parts[0]
-        if not time_str and len(parts) > 1:
-            time_str = parts[1]
+        if not t and len(parts) > 1:
+            t = parts[1]
 
-    if time_str:
-        full = f"{s} {time_str.strip()}"
+    if t:
+        clean_t = t.split(".")[0]
+        full = f"{s} {clean_t}"
     else:
         full = s
 
@@ -64,13 +93,19 @@ def format_ist_datetime(date_str: Optional[str], time_str: Optional[str] = None)
         "%d-%m-%Y %H:%M:%S",
         "%d/%m/%Y %H:%M",
         "%d-%m-%Y %H:%M",
+        "%Y-%m-%d %I:%M:%S %p",
+        "%Y-%m-%d %I:%M %p",
+        "%d/%m/%Y %I:%M:%S %p",
+        "%d/%m/%Y %I:%M %p",
+        "%d-%m-%Y %I:%M:%S %p",
+        "%d-%m-%Y %I:%M %p",
         "%Y-%m-%d",
         "%d/%m/%Y",
-        "%d-%m-%Y"
+        "%d-%m-%Y",
     ):
         try:
             dt = datetime.strptime(full, fmt)
-            if any(k in fmt for k in ("%H", "%M")):
+            if any(k in fmt for k in ("%H", "%I")):
                 return dt.strftime("%d %b %Y, %I:%M %p")
             return dt.strftime("%d %b %Y")
         except ValueError:
@@ -92,12 +127,18 @@ def find_rto_event(events: List[TrackingEvent]) -> Optional[TrackingEvent]:
             "item_return" in code or
             "itemreturn" in code or
             "rto" in code or
+            "return" in code or
             "returned to sender" in desc or
             "item returned" in desc or
             "return to sender" in desc or
+            "returned" in desc or
             "rto" in desc or
             "undelivered" in desc or
-            st in ["refused", "unclaimed", "door locked", "addressee left", "insufficient address"]
+            "unclaimed" in desc or
+            st in [
+                "refused", "unclaimed", "door locked", "addressee left",
+                "insufficient address", "returned / rto", "rto", "not delivered"
+            ]
         ):
             return ev
     return None
@@ -172,7 +213,9 @@ def parse_indiapost_json(data: Dict[str, Any], consignment_no: str) -> Optional[
     for ev in raw_events:
         raw_date = ev.get("date") or ""
         date_formatted = raw_date.split("T")[0] if "T" in raw_date else raw_date
-        time_formatted = ev.get("time")
+        time_raw = ev.get("time") or ""
+        time_ampm = format_ist_time(time_raw)
+        datetime_formatted = format_ist_datetime(date_formatted, time_raw)
         office = ev.get("office")
         event_desc = ev.get("event")
         event_code = (ev.get("eventcode") or "").lower()
@@ -186,7 +229,10 @@ def parse_indiapost_json(data: Dict[str, Any], consignment_no: str) -> Optional[
 
         events.append(TrackingEvent(
             date=date_formatted,
-            time=time_formatted,
+            time=time_ampm or time_raw,
+            time_24h=time_raw,
+            time_am_pm=time_ampm,
+            datetime_formatted=datetime_formatted,
             office=office,
             event=event_desc,
             event_type=event_code or (event_desc.lower().replace(" ", "_") if event_desc else None),
@@ -233,6 +279,9 @@ def parse_indiapost_json(data: Dict[str, Any], consignment_no: str) -> Optional[
 
     raw_booking_date = booking.get("booking_date")
     clean_booking_date = raw_booking_date.replace("Z", "").replace("T", " ") if raw_booking_date else None
+    booked_on_formatted = format_ist_datetime(raw_booking_date)
+    returned_at_formatted = format_ist_datetime(returned_at) if returned_at else None
+    delivered_at_formatted = format_ist_datetime(delivery_confirmed_on) if delivery_confirmed_on else None
 
     return TrackingResponse(
         success=True,
@@ -243,11 +292,14 @@ def parse_indiapost_json(data: Dict[str, Any], consignment_no: str) -> Optional[
         article_type=booking.get("article_type", "Speed Post"),
         booked_at=booking.get("booking_office_name"),
         booked_on=clean_booking_date or raw_booking_date,
+        booked_on_formatted=booked_on_formatted,
         destination=destination,
         destination_pincode=booking.get("destination_pincode"),
         origin_pincode=booking.get("booking_pin"),
         delivered_at=delivery_confirmed_on,
+        delivered_at_formatted=delivered_at_formatted,
         returned_at=returned_at,
+        returned_at_formatted=returned_at_formatted,
         last_updated=latest_event.date if latest_event else None,
         events_count=len(events_reversed),
         events=events_reversed,
@@ -301,7 +353,9 @@ def parse_indiapost_html(html: str) -> Dict[str, Any]:
             cols = [c.get_text(strip=True) for c in row.find_all(["td", "th"])]
             if len(cols) >= 4 and not any(h in cols[0].lower() for h in ["date", "s.no", "event"]):
                 date_val = cols[0]
-                time_val = cols[1]
+                time_raw = cols[1]
+                time_ampm = format_ist_time(time_raw)
+                datetime_formatted = format_ist_datetime(date_val, time_raw)
                 office_val = cols[2]
                 event_val = cols[3]
 
@@ -312,7 +366,10 @@ def parse_indiapost_html(html: str) -> Dict[str, Any]:
 
                 ev = TrackingEvent(
                     date=date_val,
-                    time=time_val,
+                    time=time_ampm or time_raw,
+                    time_24h=time_raw,
+                    time_am_pm=time_ampm,
+                    datetime_formatted=datetime_formatted,
                     office=office_val,
                     event=event_val,
                     event_type=event_val.lower().replace(" ", "_"),
@@ -356,10 +413,13 @@ def parse_indiapost_html(html: str) -> Dict[str, Any]:
         "article_type": article_type,
         "booked_at": booked_at,
         "booked_on": booked_on,
+        "booked_on_formatted": format_ist_datetime(booked_on),
         "destination": destination,
         "destination_pincode": dest_pincode,
         "delivered_at": delivered_at,
+        "delivered_at_formatted": format_ist_datetime(delivered_at),
         "returned_at": returned_at,
+        "returned_at_formatted": format_ist_datetime(returned_at),
         "events": list(reversed(events)),
         "events_count": len(events)
     }
