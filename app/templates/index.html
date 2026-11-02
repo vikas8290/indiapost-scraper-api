@@ -1035,8 +1035,8 @@
             let d = dateStr ? String(dateStr).trim() : '';
             let t = timeStr ? String(timeStr).trim() : '';
 
-            // If string already has AM/PM formatted text, return directly
-            if (d && (d.includes(' AM') || d.includes(' PM')) && !t) {
+            // If string is already fully formatted (e.g., '27 Oct 2026, 11:20 AM'), return directly
+            if (d && (d.includes(' AM') || d.includes(' PM')) && !t && /[A-Za-z]{3}/.test(d)) {
                 return d;
             }
 
@@ -1046,9 +1046,9 @@
                 d = parts[0];
                 if (!t && parts[1]) t = parts[1];
             } else if (d.includes(' ') && !t) {
-                const parts = d.split(' ');
-                d = parts[0];
-                t = parts[1];
+                const firstSpace = d.indexOf(' ');
+                t = d.substring(firstSpace + 1).trim();
+                d = d.substring(0, firstSpace).trim();
             }
 
             let year, month, day;
@@ -1076,9 +1076,16 @@
                 }
             }
 
+            let existingAmPm = null;
+            if (t.toUpperCase().includes('PM')) {
+                existingAmPm = 'PM';
+            } else if (t.toUpperCase().includes('AM')) {
+                existingAmPm = 'AM';
+            }
+
             let hour = null, minute = null;
             if (t) {
-                const cleanT = t.replace(/Z$/i, '').split('.')[0];
+                const cleanT = t.replace(/Z$/i, '').replace(/AM|PM/i, '').trim().split('.')[0];
                 const tp = cleanT.split(':');
                 if (tp.length >= 2) {
                     hour = parseInt(tp[0], 10);
@@ -1096,9 +1103,17 @@
             }
 
             if (hour !== null && minute !== null && !isNaN(hour) && !isNaN(minute)) {
-                const ampm = hour >= 12 ? 'PM' : 'AM';
-                let h12 = hour % 12;
-                if (h12 === 0) h12 = 12;
+                let ampm;
+                let h12;
+                if (existingAmPm) {
+                    ampm = existingAmPm;
+                    h12 = hour % 12;
+                    if (h12 === 0) h12 = 12;
+                } else {
+                    ampm = hour >= 12 ? 'PM' : 'AM';
+                    h12 = hour % 12;
+                    if (h12 === 0) h12 = 12;
+                }
                 const h12Str = h12 < 10 ? '0' + h12 : '' + h12;
                 const minStr = minute < 10 ? '0' + minute : '' + minute;
                 return `${datePart}, ${h12Str}:${minStr} ${ampm}`;
@@ -1112,7 +1127,7 @@
             document.getElementById('displayCurrentStatus').innerText = data.current_status || formatStatusTitle(data.status);
             document.getElementById('displayArticleType').innerText = data.article_type || 'Speed Post';
             document.getElementById('displayBookedAt').innerText = data.booked_at || (data.events && data.events.length ? data.events[data.events.length - 1].office : 'Origin Post Office');
-            document.getElementById('displayBookedOn').innerText = formatIndianDateTime(data.booked_on || (data.events && data.events.length ? data.events[data.events.length - 1].date : ''));
+            document.getElementById('displayBookedOn').innerText = formatIndianDateTime(data.booked_on_formatted || data.booked_on || (data.events && data.events.length ? data.events[data.events.length - 1].date : ''));
             
             const dest = (data.destination || '') + (data.destination_pincode ? ' (' + data.destination_pincode + ')' : '');
             document.getElementById('displayDestination').innerText = dest || 'Destination Post Office';
@@ -1139,7 +1154,7 @@
                     const item = document.createElement('div');
                     item.className = 'timeline-item';
                     
-                    const dateTimeFormatted = formatIndianDateTime(ev.date, ev.time);
+                    const dateTimeFormatted = ev.datetime_formatted || formatIndianDateTime(ev.date, ev.time_am_pm || ev.time);
                     
                     let statusTag = '';
                     if (ev.status && !['In Transit', 'Pending'].includes(ev.status)) {
@@ -1200,7 +1215,7 @@
                 prog.style.width = '100%';
                 prog.style.background = 'var(--success)';
                 stepTitle4.innerText = 'Delivered';
-                document.getElementById('stepDate4').innerText = formatIndianDateTime(data.delivered_at);
+                document.getElementById('stepDate4').innerText = formatIndianDateTime(data.delivered_at_formatted || data.delivered_at);
             } else if (s === 'rto' || s === 'rto_requested') {
                 s1.className = 'step-item completed';
                 s2.className = 'step-item completed';
@@ -1210,7 +1225,7 @@
                 prog.style.background = 'var(--danger)';
                 stepTitle4.innerText = 'Returned (RTO)';
                 if (icon4) icon4.className = 'fa-solid fa-arrow-rotate-left';
-                document.getElementById('stepDate4').innerText = formatIndianDateTime(data.returned_at || (data.events && data.events.length ? (data.events[0].date + ' ' + (data.events[0].time || '')) : ''));
+                document.getElementById('stepDate4').innerText = formatIndianDateTime(data.returned_at_formatted || data.returned_at || (data.events && data.events.length ? (data.events[0].date + ' ' + (data.events[0].time || '')) : ''));
             } else if (s === 'out_for_delivery') {
                 s1.className = 'step-item completed';
                 s2.className = 'step-item completed';
@@ -1227,20 +1242,20 @@
             }
 
             // Step dates
-            if (data.booked_on) {
-                document.getElementById('stepDate1').innerText = formatIndianDateTime(data.booked_on);
+            if (data.booked_on || data.booked_on_formatted) {
+                document.getElementById('stepDate1').innerText = formatIndianDateTime(data.booked_on_formatted || data.booked_on);
             }
 
             // Search events for in_transit and out_for_delivery dates
             if (data.events && data.events.length) {
                 const transitEv = data.events.find(e => (e.status === 'In Transit' || e.event_type === 'bag_dispatch' || (e.event || '').toLowerCase().includes('dispatch')));
                 if (transitEv) {
-                    document.getElementById('stepDate2').innerText = formatIndianDateTime(transitEv.date, transitEv.time);
+                    document.getElementById('stepDate2').innerText = transitEv.datetime_formatted || formatIndianDateTime(transitEv.date, transitEv.time_am_pm || transitEv.time);
                 }
 
                 const outEv = data.events.find(e => (e.status === 'Out for Delivery' || (e.event || '').toLowerCase().includes('out for delivery') || e.event_type === 'item_invoice'));
                 if (outEv) {
-                    document.getElementById('stepDate3').innerText = formatIndianDateTime(outEv.date, outEv.time);
+                    document.getElementById('stepDate3').innerText = outEv.datetime_formatted || formatIndianDateTime(outEv.date, outEv.time_am_pm || outEv.time);
                 }
             }
         }
